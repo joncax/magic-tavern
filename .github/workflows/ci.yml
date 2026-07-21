@@ -38,13 +38,15 @@ jobs:
   frontend-build:
     name: Frontend - Build Check
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
 
+      # O frontend ainda nao existe neste repo. Em vez de falhar o job
+      # (o que bloquearia o deploy-dev via 'needs'), os passos reais so
+      # correm se houver mesmo um frontend/package.json. Assim que o
+      # frontend for criado, isto passa a validar o build normalmente.
       - name: Set up Node
+        if: hashFiles('frontend/package.json') != ''
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -52,10 +54,18 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
+        if: hashFiles('frontend/package.json') != ''
+        working-directory: frontend
         run: npm ci
 
       - name: Build
+        if: hashFiles('frontend/package.json') != ''
+        working-directory: frontend
         run: npm run build
+
+      - name: Frontend ainda nao existe
+        if: hashFiles('frontend/package.json') == ''
+        run: echo "Sem frontend/package.json ainda - job passa como sucesso vazio (esperado nesta fase)."
 
   deploy-dev:
     name: Build, Push & Deploy to Dev
@@ -90,6 +100,7 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/magic-tavern-backend:${{ steps.tag.outputs.tag }}
 
       - name: Build & push frontend
+        if: hashFiles('frontend/Dockerfile') != ''
         uses: docker/build-push-action@v6
         with:
           context: ./frontend

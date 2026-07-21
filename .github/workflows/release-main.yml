@@ -1,0 +1,84 @@
+name: Release - Main
+
+# Dispara automaticamente no push para main. O "gate manual" e o proprio
+# merge da PR dev -> main. A partir dai, build+push+bump sao automaticos,
+# mas a Application "magic-tavern-prod" no Argo CD NAO tem auto-sync
+# (confirmado no padrao do nerv-dashboard/nerv-pantry) - por isso o
+# deploy real em prod so acontece quando fizeres "Sync" manualmente no
+# Argo CD. Este e o segundo gate manual, ja embutido no teu setup atual.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: joncax
+
+jobs:
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        run: echo "tag=$(echo $GITHUB_SHA | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/magic-tavern-backend:${{ steps.tag.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/magic-tavern-backend:latest
+
+      - name: Build & push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/magic-tavern-frontend:${{ steps.tag.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/magic-tavern-frontend:latest
+
+  update-gitops:
+    name: Bump image tag em values-prod.yaml
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: joncax/nerv-gitops
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops
+
+      - name: Bump image tag com yq
+        working-directory: gitops
+        run: |
+          yq -i '.backend.image.tag = "${{ needs.build-and-push.outputs.image_tag }}"' apps/magic-tavern/values-prod.yaml
+          yq -i '.frontend.image.tag = "${{ needs.build-and-push.outputs.image_tag }}"' apps/magic-tavern/values-prod.yaml
+
+      - name: Commit & push
+        working-directory: gitops
+        run: |
+          git config user.name "magic-tavern-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add apps/magic-tavern/values-prod.yaml
+          git commit -m "chore(magic-tavern): bump prod image tag to ${{ needs.build-and-push.outputs.image_tag }}"
+          git push
